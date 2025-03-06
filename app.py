@@ -8,38 +8,44 @@ from langchain_groq import ChatGroq  # Use LangChain's Groq integration
 from dotenv import load_dotenv
 from src.prompt import *
 import os
+import logging
 
+# Initialize Flask app
 app = Flask(__name__)
 
-load_dotenv()
-
 # Load environment variables
-PINECONE_API_KEY = os.environ.get('PINECONE_API_KEY')
-GROQ_API_KEY = os.environ.get('GROQ_API_KEY')
+load_dotenv()
+PINECONE_API_KEY = os.getenv('PINECONE_API_KEY')
+GROQ_API_KEY = os.getenv('GROQ_API_KEY')
+
+# Check if API keys are set
+if not PINECONE_API_KEY or not GROQ_API_KEY:
+    raise ValueError("Missing required API keys. Check your .env file.")
 
 # Set environment variables for LangChain
 os.environ["PINECONE_API_KEY"] = PINECONE_API_KEY
 os.environ["GROQ_API_KEY"] = GROQ_API_KEY
 
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 # Download Hugging Face embeddings
+logger.info("Downloading Hugging Face embeddings...")
 embeddings = download_hugging_face_embeddings()
 
-# Pinecone index name
-index_name = "medicalbot"
-
 # Initialize Pinecone vector store
+index_name = "medicalbot"
 docsearch = PineconeVectorStore.from_existing_index(
     index_name=index_name,
     embedding=embeddings
 )
-
-# Create a retriever
 retriever = docsearch.as_retriever(search_type="similarity", search_kwargs={"k": 3})
 
 # Initialize Groq client using LangChain's ChatGroq
 groq_client = ChatGroq(api_key=GROQ_API_KEY, model_name="mixtral-8x7b-32768", temperature=0.4)
 
-# Define the prompt template
+# Define prompt template
 prompt = ChatPromptTemplate.from_messages(
     [
         ("system", system_prompt),
@@ -57,18 +63,25 @@ rag_chain = create_retrieval_chain(retriever, question_answer_chain)
 def index():
     return render_template('chat.html')
 
-@app.route("/get", methods=["GET", "POST"])
+@app.route("/get", methods=["POST"])
 def chat():
-    # Get user input from the form
-    msg = request.form["msg"]
-    print("User Input:", msg)
+    try:
+        msg = request.form.get("msg")
+        if not msg:
+            return jsonify({"error": "No input provided"}), 400
 
-    # Invoke the RAG chain
-    response = rag_chain.invoke({"input": msg})
-    print("Response:", response["answer"])
+        logger.info(f"User Input: {msg}")
 
-    # Return the response to the frontend
-    return str(response["answer"])
+        # Invoke the RAG chain
+        response = rag_chain.invoke({"input": msg})
+        answer = response.get("answer", "No response available")
+
+        logger.info(f"Response: {answer}")
+
+        return jsonify({"answer": answer})
+    except Exception as e:
+        logger.error(f"Error processing request: {str(e)}")
+        return jsonify({"error": "Something went wrong"}), 500
 
 if __name__ == '__main__':
-    app.run(host="0.0.0.0", port=8080, debug=True)
+    app.run(host="0.0.0.0", port=8080)
